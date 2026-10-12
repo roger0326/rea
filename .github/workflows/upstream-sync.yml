@@ -1,0 +1,50 @@
+name: Sync Fork
+
+on:
+  schedule:
+    - cron: '0 2 * * *'   # 每天 UTC 2:00 运行（北京时间 10:00），可按需修改
+  workflow_dispatch:       # 允许手动触发
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出 fork 仓库
+        uses: actions/checkout@v4
+        with:
+          ref: main          # 换成你的默认分支名，一般是 main 或 master
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: 配置 git 身份
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: 添加上游仓库并拉取
+        run: |
+          git remote add upstream https://github.com/morluto/rea.git || true
+          git fetch upstream --prune
+
+      - name: 检查 fork 是否落后
+        id: check
+        run: |
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "up_to_date=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "up_to_date=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 合并上游更新
+        if: steps.check.outputs.up_to_date == 'false'
+        run: |
+          git checkout main
+          git merge upstream/main --no-edit
+
+      - name: 推送回 fork
+        if: steps.check.outputs.up_to_date == 'false'
+        run: |
+          git push origin main
