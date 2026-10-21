@@ -73,6 +73,23 @@ describe("JavaScript semantic analysis: runtime boundaries 1", () => {
     ]);
   });
 
+  it("keeps an overflowing timer delay unknown in a complete semantic result", () => {
+    const ir = analyzeJavaScriptSemantics(`
+      function greet() { return "hello"; }
+      setTimeout(() => greet(), 1e999);
+    `);
+
+    expect(ir.timerOperations).toEqual([
+      expect.objectContaining({
+        kind: "schedule",
+        method: "setTimeout",
+        delayMilliseconds: null,
+        resolution: "complete",
+      }),
+    ]);
+    expect(ir.callables.some(({ name }) => name === "greet")).toBe(true);
+  });
+
   it("does not treat shadowed timer globals as Node timers", () => {
     const ir = analyzeJavaScriptSemantics(`
       function run(setTimeout, clearTimeout) {
@@ -128,5 +145,76 @@ describe("JavaScript semantic analysis: runtime boundaries 1", () => {
     expect(ir.boundaryOperations).toHaveLength(1);
     expect(ir.resourceOperations).toHaveLength(1);
     expect(ir.objectOperations.length).toBeGreaterThan(0);
+  });
+});
+
+describe("JavaScript semantic analysis: event dispatch data", () => {
+  it("keeps emitted data out of dispatch listener fields", () => {
+    const ir = analyzeJavaScriptSemantics(`
+      import { EventEmitter } from "node:events";
+      const bus = new EventEmitter();
+      const data = 1;
+      const handler = () => {};
+      bus.on("ready", handler);
+      bus.emit("ready", data);
+      bus.emit("ready");
+      bus.off("ready", handler);
+      bus.removeAllListeners("ready", data);
+    `);
+    const handler = ir.bindings.find(({ name }) => name === "handler");
+    expect(handler).toBeDefined();
+    expect(
+      ir.eventOperations.map(
+        ({ kind, method, listenerBindingId, listenerLocation }) => ({
+          kind,
+          method,
+          listenerBindingId,
+          hasListenerLocation: listenerLocation !== null,
+        }),
+      ),
+    ).toEqual([
+      {
+        kind: "register",
+        method: "on",
+        listenerBindingId: handler?.bindingId,
+        hasListenerLocation: true,
+      },
+      {
+        kind: "dispatch",
+        method: "emit",
+        listenerBindingId: null,
+        hasListenerLocation: false,
+      },
+      {
+        kind: "dispatch",
+        method: "emit",
+        listenerBindingId: null,
+        hasListenerLocation: false,
+      },
+      {
+        kind: "remove",
+        method: "off",
+        listenerBindingId: handler?.bindingId,
+        hasListenerLocation: true,
+      },
+      {
+        kind: "remove",
+        method: "removeAllListeners",
+        listenerBindingId: null,
+        hasListenerLocation: false,
+      },
+    ]);
+    expect(
+      ir.eventOperations.map(({ eventName, resolution }) => [
+        eventName,
+        resolution,
+      ]),
+    ).toEqual([
+      ["ready", "complete"],
+      ["ready", "complete"],
+      ["ready", "complete"],
+      ["ready", "complete"],
+      ["ready", "complete"],
+    ]);
   });
 });

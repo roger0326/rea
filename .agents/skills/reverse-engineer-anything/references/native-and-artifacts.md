@@ -1,5 +1,48 @@
 # Native, managed, and packaged artifacts
 
+For release comparisons, export `list_procedures` Evidence from each target before
+closing it. Close clears session records: import both bundles after collecting the
+two targets, or supply portable inline Evidence. `match_native_functions` pairs unique exact names and, when supplied,
+complete observed body bytes. Reuse optional same-context `list_names`,
+`procedure_info`, `read_bytes` and existing `analyze_function` Evidence; avoid
+decompiling every function merely to match it. Its summary retains a parent for
+`inspect_analysis_view` `function-matches` collections `matches` and `functions`.
+Select columns, batch IDs and page individual facts; aliases remain unresolved.
+Unpaired observations do not prove additions/removals. Existing matched dossier
+pairs include inputs for `compare_functions`; otherwise analyze just chosen pairs.
+
+## Apple app resources
+
+Use `open_bundle_resources` with the selected app path, then `inspect_plist`,
+`decode_interface_builder`, `inspect_asset_catalog`, or `inspect_keyed_archive`.
+The resource session reads the app without resolving `CFBundleExecutable` or
+starting a deep provider. Preserve `resource_root` provenance, per-resource
+hashes where reported, and null executable identity; a directory path is not
+an executable digest. Export retained Evidence before closing or switching
+roots. Binary analysis snapshots do not apply. Use `open_binary` to switch to
+executable analysis, and `close_binary` to release either session kind.
+
+The four matching CLI commands accept the app path directly. For an archive
+inside the app, use `inspect-keyed-archive APP_PATH RELATIVE_ARCHIVE_PATH`.
+Host requirements for plist and compiled asset/Interface Builder tooling still
+apply; a resource-only session does not establish provider availability.
+
+## Desktop installation directories
+
+When an installation directory is supplied and its runtime is unknown, use
+`inspect_desktop_application` with its absolute path. Default MCP summary
+delivery retains complete Evidence. Read `files`, `omissions`, `candidates`, `components` or
+`next_probes` with `inspect_analysis_view` kind `desktop-application`, selecting
+exact paths, batched file/omission IDs or families and only needed fields and pages.
+Summary `probe_issues` retains counts and bounded previews. Select files with
+`has_issues: true` and fields `path`, `read_status`, `issues` to retrieve exact
+failures directly; preview text is display data, while `file_id` selects full facts. Preserve source
+coverage, read-range identity and unknowns; directory snapshot identity is not
+a digest of every file's contents. Component path markers do not establish
+runtime presence. For compact CLI output, use
+`inspect-desktop-application PATH --detail summary --evidence_output BUNDLE`.
+See [desktop installations](https://github.com/morluto/rea/blob/main/docs/desktop-applications.md).
+
 ## Go build metadata
 
 Use `inspect_go_binary` for an explicit local ELF, PE or thin Mach-O when the
@@ -10,6 +53,46 @@ Preserve artifact SHA-256, original file ranges, framed module bytes and every
 unparsed module-text line. A missing record is an unknown, not proof of a
 non-Go binary; observed metadata does not authenticate its claims. Function,
 source and type recovery remain a separate native-analysis question.
+
+## Model files
+
+Use `inspect_model_artifact` (`inspect-model-artifact PATH`) for local GGUF v2/v3
+and safetensors declarations without a model runtime. Header-only mode does not
+read weights or establish full-file identity. `hash: "full"` explicitly streams
+all bytes. Retained `model-artifact` views page `metadata`, `tensors` and derived
+`types`, with exact batch filters and selected fields. Arrays retain typed counts
+and eight-element previews; omitted values, unknown types and runtime behavior
+stay explicit. See [model files](https://github.com/morluto/rea/blob/main/docs/model-artifacts.md).
+
+## IL2CPP metadata
+
+Use `inspect_il2cpp_metadata` for an explicit local Unity `global-metadata.dat`
+(versions 24, 27, 29, 31 and 39) when the question concerns assembly images,
+names, member owners, string literals, namespaces or index ranges. No `open_binary`, Unity installation or target
+execution is required. The CLI equivalent is `inspect-il2cpp-metadata PATH`.
+MCP defaults to counts with complete retained Evidence. Query `sections`,
+`images`, `types`, `methods`, `fields`, `properties`, `events`, `parameters` or
+`string_literals` through `inspect_analysis_view`; use exact names,
+batch indices and selected fields. Row indices are scoped by artifact SHA-256
+and collection; page offsets count filtered matches. Parameters support batch
+`method_indices` to read one method's parameters directly. Historical reports
+without member collections retain unknown counts rather than empty inventories. Preserve
+artifact SHA-256 and index widths. Unrecognized magic may mean encryption and
+is unsupported, not decrypted. Linking names to `GameAssembly` or
+`UnityFramework` code addresses remains a separate native-analysis question.
+See [IL2CPP metadata](https://github.com/morluto/rea/blob/main/docs/il2cpp-metadata.md).
+
+## Rust dependency metadata
+
+Use `inspect_rust_binary` for an explicit local ELF, PE, or thin Mach-O when
+the question concerns the cargo-auditable crate list embedded in `.dep-v0`
+(Mach-O: `__DATA,.dep-v0`). No `open_binary`, Rust installation, or target
+execution is required. The CLI equivalent is `inspect-rust-binary PATH`.
+Preserve artifact SHA-256, package order, dependency indices, and the section
+file range. A missing section is null metadata, not proof the binary has no
+dependencies. An omitted package kind stays null. A rustc commit hash is
+inferred from a read-only `/rustc/<40-hex>/` path and does not by itself
+identify the compiler. See [Rust binaries](https://github.com/morluto/rea/blob/main/docs/rust-binaries.md).
 
 ## SQLite snapshots
 
@@ -83,6 +166,14 @@ names, the native API record, and value-flow summaries. Pseudocode offsets and l
 code units; use the returned `next_offset` for continuation. Provider limitations
 and unavailable facts remain explicit; the complete parent Evidence is retained.
 
+`inspect_macho` on a large framework returns megabytes of imports and exports.
+Select `detail: "summary"` for slice identity, UUID and per-collection counts,
+then page rows with `view: {kind: "macho", facet: "exports", offset: 0, limit: 64}`
+and `normalized_result.parent_evidence_id`. Facets are entrypoints,
+architectures, build_metadata, load_commands, dependencies, imports, exports,
+segments and provenance. `source_exhaustive: false` means unreturned symbols
+may exist.
+
 To see which functions or Objective-C methods a Mach-O actually calls in one
 run, use `observe_native_calls` with explicit breakpoints and a bounded
 `duration_ms`/`max_events`. It launches a new process under LLDB, so the target
@@ -104,6 +195,56 @@ operation's full ordered list. Candidate capabilities describe possible
 providers. Top-level session capabilities describe the current route, and
 `analysis_provider_binding` identifies the selected provider.
 
+## Ghidra startup deadline recovery
+
+`provider_timeout` during the first Ghidra query can cover import, auto-analysis,
+bridge startup, and readiness. The default 330,000 ms is configurable through
+`REA_GHIDRA_STARTUP_TIMEOUT_MS`; a smaller query still needs the same cold import.
+
+Preserve useful Evidence before closing the session or restarting REA. Check
+`close_binary` and resolve reported cleanup failures. Set a larger startup budget
+in the environment that launches REA, then restart REA and reconnect the MCP
+client before reopening the same target. Closing and reopening a binary in the
+existing server keeps its original configuration and starts import again.
+Environment changes in an agent's shell do not update an already running MCP
+server. If its launch configuration cannot be changed, report that constraint
+and the exact retry setting instead of claiming a fixed technical limit.
+
+The client's tool-call deadline must allow startup plus the requested query;
+server settings and progress notifications cannot override it. CLI analysis
+avoids the MCP client deadline, but retains the provider deadline. For example:
+
+```sh
+REA_GHIDRA_STARTUP_TIMEOUT_MS=1800000 rea analyze /absolute/path/to/app.exe --provider ghidra --json
+```
+
+Thirty minutes is an example budget, not a completion guarantee. Keep host CPU
+and memory controls in place. Disable specific expensive analyzers only when
+their missing coverage is acceptable and retain the resulting limitations.
+Exported C and embedded resources remain useful independent evidence, but a
+timeout does not establish complete analysis or absence of code. See the
+[deadline and client guide](https://github.com/morluto/rea/blob/main/docs/mcp-contracts.md#ghidra-first-query-deadlines-and-recovery).
+
+## Static memory and original file bytes
+
+For Ghidra, `read_bytes` reads initialized analysis memory, including loader
+fixups; it does not read a running process. Check `returned_bytes` and `complete`
+before decoding a table. An incomplete read is missing coverage, not a zero-filled
+tail. Use `list_segments` to inspect the selected block's initialization and address-space
+facts, and retain unavailable facts as unknown.
+
+Use `address_to_file_offset` to anchor one observed address to original file
+bytes. A mapping for the first address does not establish a contiguous mapping
+for an entire table, and loader fixups can make analysis bytes differ from source
+bytes. Keep source ranges and analysis-memory observations separate.
+
+A pointer table can refer to writable slots populated by a constructor rather
+than directly to immutable resources. An uninitialized block or an observed zero
+does not establish the slot's later runtime value. Follow `xrefs` and the relevant
+writer's assembly or pseudocode; distinguish recorded assignments from inferred
+execution order. Do not replace unreadable bytes with zeros or conclude that a
+resource is absent without the necessary initialization evidence.
+
 ## DOS MZ with Ghidra
 
 For an admitted DOS MZ target, use `inspect_native_load_image` to check measured
@@ -111,10 +252,10 @@ loaded bytes, file mappings, relocations and the entry against the immutable
 snapshot. Keep `mismatch` and `unsupported` explicit. Verified import covers the
 reported static image, not runtime DOS or PC-98 hardware behavior.
 
-Use `read_bytes` for initialized analysis memory and `address_to_file_offset` to
-anchor one observed address to original file bytes. Loader fixups can change a
-word; a source offset does not imply byte equality. Complete function body ranges
-use inclusive ends and can contain gaps. Do not treat the enclosing span as code.
+For Ghidra decompilation, `procedure_pseudo_code` also accepts `procedure: "file-offset:0x..."`; CLI `rea decompile <path> --file-offset=0x... --provider ghidra` resolves the source byte offset internally. An unresolved 0x-prefixed numeric procedure selector also falls back to a unique file mapping. Existing symbols and analysis addresses win; multiple mappings fail as ambiguous. Preserve the returned file-offset and address locations and raw selection observations. ELF virtual addresses are distinct from file offsets; never assume an arbitrary offset plus image base is an analysis address.
+
+Complete function body ranges use inclusive ends and can contain gaps. Do not
+treat the enclosing span as code.
 For packed targets, retain the original and separately derived artifact identities;
 decompiling an unpacking stub does not recover the unpacked program.
 
@@ -135,6 +276,26 @@ assembly. Keep managed/native boundaries and unavailable reconstruction facts
 explicit. A bring-your-own reconstruction oracle is separate from the canonical
 parser and must not become an implicit setup dependency.
 
+For identity/classification questions, `inspect_managed_artifact` can explicitly
+select `detail: "summary"` on the first MCP call. It retains complete metadata
+and returns a linked overview with full classification/evidence, nullable
+module/MVID, frameworks, metadata coverage/issues/limitations and returned-row
+counts. Default complete requests remain unchanged. Read original rows with
+`inspect_analysis_view`, source `normalized_result.parent_evidence_id`, and
+`view: {kind: "managed", collection: "attributes", offset: 0, limit: 16}`.
+Collections are `references`, `resources` and `attributes`. Paging does not
+repeat parsing. Returned-row exhaustion
+does not prove complete metadata or absence under partial/unavailable coverage;
+preserve build-local tokens and their artifact/MVID scope.
+
+`inspect_managed_members` always returns the assembly-wide `member_refs`, even
+for one selected type. For questions about a selected type, select
+`detail: "summary"` with `type_names`; it returns the selection (with unmatched
+names), coverage and per-collection counts. Page rows with
+`view: {kind: "managed-members", collection: "call_edges", offset: 0, limit: 64}`
+over `types`, `exported_types`, `fields`, `methods`, `member_refs`, `call_edges`,
+`field_accesses` or `user_strings`.
+
 ### .NET NativeAOT
 
 NativeAOT binaries contain native machine code, so ordinary CIL decompilers
@@ -153,7 +314,9 @@ additional evidence only when the provider accepts and matches them.
 REA has a built-in read-only snapshot parser for x64 PE targets with .NET 8 RTR
 9.1 metadata. An optional headless Ghidra adapter adds database annotations and
 broader metadata recovery on Linux; it requires an explicitly configured
-NativeAOT JAR. These are separate routes. See the
+NativeAOT JAR. These are separate routes. The built-in parser also runs on
+Windows Ghidra P0; read frozen literals from its report, because
+`search_strings` does not include them. See the
 [NativeAOT guide](https://github.com/morluto/rea/blob/main/docs/ghidra-nativeaot.md)
 for setup, supported layouts, and host restrictions. Preserve binary identity
 and distinguish derived metadata from Ghidra database observations. Recovered
@@ -182,8 +345,9 @@ every executable in the bundle. It also lists missing or weak loads and earlier
 `architecture`. System paths stay undetermined because the dyld shared cache
 provides them.
 
-Use `extract_artifact` when materialized files are needed. It takes no arguments
-and materializes all regular files into a fresh temporary directory chosen by
+Use `extract_artifact` when materialized files are needed. It extracts the active
+target and accepts optional `integrity_policy`; see the [MCP contracts](https://github.com/morluto/rea/blob/main/docs/mcp-contracts.md).
+It materializes all regular files into a fresh temporary directory chosen by
 REA. Symlinks and encrypted entries are inventory facts, not extractable files.
 The result reports the materialized directory; callers do not choose the
 destination. No separate permission grant is needed.
@@ -201,10 +365,15 @@ context. PSP/stack/device state remains unmodeled. See [DOS guide](https://githu
 
 For other headerless images (embedded firmware without ELF/Mach-O/PE/MZ
 headers), open with `format: "raw-binary"`, `architecture` (`x86`, `x86_64`,
-`arm`, or `arm64`), and `entry_point` (`0x` hex). File offset 0 is mapped at
+`arm`, `arm64`, `6502`, or `m68k`), and `entry_point` (`0x` hex). File offset 0 is mapped at
 that address. Hopper and IDA refuse this interpretation; Ghidra uses
-`BinaryLoader` with a little-endian generic language. Big-endian, Thumb-only,
-and Cortex-M variants are unsupported. See [raw binary guide](https://github.com/morluto/rea/blob/main/docs/raw-binary.md).
+`BinaryLoader` with a generic language: big-endian for `m68k`, little-endian
+otherwise. Big-endian ARM, Thumb-only, and Cortex-M variants are unsupported.
+`6502` selects NMOS 6502; the entry and complete file mapping must fit within
+`0x0000..0xffff`. 65C02, 65816, cartridge containers, bank switching, and mapper
+semantics are unsupported. `m68k` requires an even entry and decodes the 68040
+superset of the 68000 family; Amiga/Atari containers and vector-table entry
+discovery are unsupported. Windows Ghidra P0 admits raw images only for `6502`. See [raw binary guide](https://github.com/morluto/rea/blob/main/docs/raw-binary.md).
 
 ### Function annotations in Ghidra
 
@@ -221,3 +390,28 @@ resolution is explicit; missing references and size mismatch remain visible.
 Other payloads are opaque, and this operation does not decode images or simulate
 Windows resource loading. Consult the budgets and supported tree profile in
 [offline binary diagnostics](https://github.com/morluto/rea/blob/main/docs/binary-diagnostics.md).
+
+For exact core-module import/export differences, use `compare_wasm_interfaces`
+with two complete inspection Evidence records (or current-session retained
+references) and explicit scope. Preserve unknown types/duplicate names; static
+interface equality is not runtime compatibility. CLI accepts complete inline
+Evidence in `rea compare-wasm-interfaces input.json --json`.
+
+## Godot PCK
+
+For a standalone PCK, `open_binary` then `inspect_artifact` with
+`detail: "summary"` retains the complete static inventory. Use the returned
+`parent_evidence_id` with `inspect_analysis_view` inventory occurrences filtered
+by exact `logical_paths` or `occurrence_ids`, and join `artifact_id` to nodes
+filtered by `artifact_ids`. Select only needed fields; identity links remain.
+Prefer `inspect-artifact --detail summary --evidence_output PATH` for CLI tasks;
+the same CLI discovers embedded packs via their EOF trailer without opening a
+native analysis provider. Normal native opening remains unchanged.
+
+Distinguish declared MD5 from observed SHA-256 and graph/page completeness from
+`source_coverage`. Encrypted directories and sparse bundles have unknown entry
+coverage; encrypted members have unknown content identity. An empty filtered
+page cannot prove absence in unknown coverage. Retained views are historical,
+not fresh filesystem checks. No decryption, Godot resource decoding, GDScript
+decompilation or target execution is provided. See
+[Godot PCK](https://github.com/morluto/rea/blob/main/docs/godot-pck.md).

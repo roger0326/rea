@@ -84,6 +84,11 @@ export const isSnapshotCacheable = (
     descriptor.effects.mayWriteFilesystem === false) &&
   descriptor.effects.changesPermissions === false;
 
+/** Windows Ghidra must admit the selected source through its native snapshot owner. */
+export const requiresNativeSourceAdmissionBeforeReplay = (
+  providerId: string | undefined,
+): boolean => process.platform === "win32" && providerId === "ghidra";
+
 /** Bounded in-memory cache for one immutable binary identity. */
 export class AnalysisSnapshotCache {
   readonly #entries = new Map<string, AnalysisSnapshotEntry>();
@@ -249,7 +254,7 @@ export class AnalysisSnapshotCache {
       readonly limitations: readonly string[];
       readonly relationshipCoverage?: AnalysisExecution["relationshipCoverage"];
       readonly locations: AnalysisExecution["locations"];
-      readonly subject: AnalysisExecution["subject"];
+      readonly subject: NonNullable<AnalysisExecution["subject"]> | null;
     };
   }): void {
     this.select(input.target, input.profile);
@@ -287,7 +292,7 @@ export class AnalysisSnapshotCache {
     if (cached === undefined) return undefined;
     const cachedSubject = cached.execution.subject;
     const subject =
-      cachedSubject === null
+      cachedSubject == null
         ? null
         : rebindEvidenceSubjectTargetPath(
             {
@@ -323,7 +328,7 @@ export class AnalysisSnapshotCache {
               relationshipCoverage: cached.execution.relationship_coverage,
             }),
       locations: cached.execution.locations,
-      subject,
+      subject: subject ?? null,
     });
   }
 
@@ -337,6 +342,9 @@ export class AnalysisSnapshotCache {
   }): void {
     const { target, profile, operation, parameters, execution } = input;
     this.select(target, profile);
+    // The snapshot format does not carry reference truncation; a replay would
+    // present a capped read as complete, so it is not recorded.
+    if (execution.referencesTruncated === true) return;
     const queryId = analysisQueryId(
       snapshotTarget(target),
       snapshotBinding(profile),
@@ -349,7 +357,20 @@ export class AnalysisSnapshotCache {
       binding: snapshotBinding(profile),
       operation,
       parameters,
-      execution,
+      execution: {
+        ...execution,
+        subject:
+          execution.subject === undefined
+            ? {
+                path: target.path,
+                sha256: target.sha256,
+                format: target.format,
+                ...(target.architecture === undefined
+                  ? {}
+                  : { architecture: target.architecture }),
+              }
+            : execution.subject,
+      },
     });
     this.#entries.set(entry.query_id, entry);
   }

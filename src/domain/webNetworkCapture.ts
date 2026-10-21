@@ -1,6 +1,12 @@
 import { z } from "zod";
 import { jsonValueSchema } from "./jsonValue.js";
 import { localPathStringSchema } from "./localPath.js";
+import {
+  protobufDecodingSchema,
+  protobufOptionsSchema,
+} from "./protobufWire.js";
+import { qlogCaptureFactsSchema } from "./qlogCapture.js";
+import { canBorrowParsedJsonSnapshot } from "./immutableJson.js";
 
 /** Complete historical evidence budgets; exceeding a budget returns no partial capture. */
 export const WEB_NETWORK_CAPTURE_LIMITS = {
@@ -10,12 +16,19 @@ export const WEB_NETWORK_CAPTURE_LIMITS = {
   depth: 64,
 } as const;
 
+export const WEB_NETWORK_CAPTURE_FORMATS = [
+  "har",
+  "mitmproxy",
+  "saz",
+  "qlog",
+] as const;
+
 /** Inspect an explicit retained capture without contacting its recorded destinations. */
 export const inspectWebNetworkCaptureInputSchema = z.strictObject({
   capture_path: localPathStringSchema.describe(
-    "Absolute local HAR or mitmproxy capture path.",
+    "Absolute local HAR, mitmproxy, Fiddler SAZ or aioquic qlog capture path.",
   ),
-  format: z.enum(["har", "mitmproxy"]),
+  format: z.enum(WEB_NETWORK_CAPTURE_FORMATS),
   record_ordinals: z
     .array(z.number().int().nonnegative())
     .min(1)
@@ -23,6 +36,7 @@ export const inspectWebNetworkCaptureInputSchema = z.strictObject({
     .describe(
       "Zero-based producer record ordinals, in caller-selected order. Omit to inspect every record.",
     ),
+  protobuf: protobufOptionsSchema.optional(),
   sensitive_values: z
     .array(z.string().min(1))
     .default([])
@@ -30,6 +44,21 @@ export const inspectWebNetworkCaptureInputSchema = z.strictObject({
       "Literal text excluded from capture payloads, byte/numeric projections, producer coordinates, artifact paths/digests and diagnostic text. Declaration strings are never persisted in Evidence parameters. Canonical contract keys, enums and provider identities remain intact.",
     ),
 });
+
+/** Read declarations through their owning schema for service and adapter failures. */
+export const captureSensitiveValues = (
+  rawInput: unknown,
+): readonly string[] => {
+  const parsed =
+    inspectWebNetworkCaptureInputSchema.shape.sensitive_values.safeParse(
+      typeof rawInput === "object" &&
+        rawInput !== null &&
+        "sensitive_values" in rawInput
+        ? rawInput.sensitive_values
+        : undefined,
+    );
+  return parsed.success ? parsed.data : [];
+};
 
 const pointerSchema = z
   .string()
@@ -53,21 +82,26 @@ const binaryBase = {
   pointer: pointerSchema,
   representation: z.enum(["producer-bytes", "har-base64-content"]),
 };
+const retainedBinaryDescriptorSchema = z.strictObject({
+  ...binaryBase,
+  state: z.literal("retained"),
+  bytes: z.number().int().nonnegative(),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+});
+const redactedBinaryDescriptorSchema = z.strictObject({
+  ...binaryBase,
+  state: z.literal("redacted"),
+  bytes: z.null(),
+  sha256: z.null(),
+});
+/** Exact byte facts shared by complete records and previews that omit content. */
+export const webNetworkCaptureBinaryDescriptorSchema = z.discriminatedUnion(
+  "state",
+  [retainedBinaryDescriptorSchema, redactedBinaryDescriptorSchema],
+);
 const binarySchema = z.discriminatedUnion("state", [
-  z.strictObject({
-    ...binaryBase,
-    state: z.literal("retained"),
-    content_base64: z.string(),
-    bytes: z.number().int().nonnegative(),
-    sha256: z.string().regex(/^[0-9a-f]{64}$/),
-  }),
-  z.strictObject({
-    ...binaryBase,
-    state: z.literal("redacted"),
-    content_base64: z.null(),
-    bytes: z.null(),
-    sha256: z.null(),
-  }),
+  retainedBinaryDescriptorSchema.extend({ content_base64: z.string() }),
+  redactedBinaryDescriptorSchema.extend({ content_base64: z.null() }),
 ]);
 const numberSchema = z.strictObject({
   pointer: pointerSchema,
@@ -85,6 +119,10 @@ export const webNetworkCaptureRecordSchema = z.strictObject({
     }),
     z.strictObject({ kind: z.literal("json-pointer"), pointer: pointerSchema }),
     z.strictObject({
+      kind: z.literal("archive-members"),
+      members: z.array(z.string()).min(1),
+    }),
+    z.strictObject({
       kind: z.literal("byte-range"),
       offset: z.number().int().nonnegative(),
       bytes: z.number().int().positive(),
@@ -95,71 +133,112 @@ export const webNetworkCaptureRecordSchema = z.strictObject({
   numeric_literals: z.array(numberSchema),
   redactions: z.array(redactionSchema),
   limitations: z.array(z.string()),
+  protobuf: z
+    .array(protobufDecodingSchema)
+    .exactOptional()
+    .describe(
+      "Flat decoding facts for explicitly selected records. Field indices are local to a body; offset_basis states whether ranges refer to retained or base64-decoded bytes. Interpretations without a caller-supplied schema are candidates.",
+    ),
 });
 
-/** Decoded records retain unique producer ordinals within their declared coverage. */
-export const webNetworkCapturePayloadSchema = z
+/** The selected offline parser profile, independent of authenticated producer identity. */
+export const webNetworkCaptureDecoderSchema = z.strictObject({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  version: z.string().min(1),
+});
+
+/** Source coverage is shared by every offline decoder. */
+export const protobufCaptureCoverageSchema = z
   .strictObject({
-    decoder: z.strictObject({
-      id: z.string().min(1),
-      name: z.string().min(1),
-      version: z.string().min(1),
-    }),
-    container: z.strictObject({
-      reported: jsonValueSchema,
-      numeric_literals: z.array(numberSchema),
-      redactions: z.array(redactionSchema),
-      records_pointer: pointerSchema.nullable(),
-    }),
-    total_records: z.number().int().nonnegative(),
-    records: z.array(webNetworkCaptureRecordSchema),
+    status: z.enum(["complete", "partial"]),
+    selected_records: z.number().int().nonnegative(),
+    inspected_records: z.number().int().nonnegative(),
   })
-  .superRefine((capture, context) => {
-    if (capture.records.length > capture.total_records) {
+  .superRefine((coverage, context) => {
+    if (
+      coverage.inspected_records > coverage.selected_records ||
+      (coverage.status === "complete" &&
+        coverage.inspected_records !== coverage.selected_records)
+    )
       context.addIssue({
         code: "custom",
-        path: ["records"],
-        message: "Retained record count exceeds the declared capture total.",
+        path: ["status"],
+        message: "Protobuf coverage contradicts its inspected selection.",
+      });
+  });
+const payloadShape = {
+  protobuf_coverage: protobufCaptureCoverageSchema.exactOptional(),
+  decoder: webNetworkCaptureDecoderSchema,
+  container: z.strictObject({
+    reported: jsonValueSchema,
+    numeric_literals: z.array(numberSchema),
+    redactions: z.array(redactionSchema),
+    records_pointer: pointerSchema.nullable(),
+  }),
+  total_records: z.number().int().nonnegative(),
+  records: z.array(webNetworkCaptureRecordSchema),
+};
+const refineCoverage = (
+  capture: { total_records: number; records: { ordinal: number }[] },
+  context: z.RefinementCtx,
+): void => {
+  const seen = new Set<number>();
+  for (const [index, record] of capture.records.entries()) {
+    if (record.ordinal >= capture.total_records || seen.has(record.ordinal)) {
+      context.addIssue({
+        code: "custom",
+        path: ["records", index, "ordinal"],
+        message:
+          "Retained ordinals must be unique and within the declared capture total.",
       });
       return;
     }
-    const seen = new Set<number>();
-    for (const [index, record] of capture.records.entries()) {
-      if (record.ordinal >= capture.total_records || seen.has(record.ordinal)) {
-        context.addIssue({
-          code: "custom",
-          path: ["records", index, "ordinal"],
-          message:
-            "Retained ordinals must be unique and within the declared capture total.",
-        });
-        return;
-      }
-      seen.add(record.ordinal);
-    }
-  });
-
-/** Historical capture inspection has file identity, producer provenance and explicit unknowns. */
-export const webNetworkCaptureSchema =
-  webNetworkCapturePayloadSchema.safeExtend({
-    artifact: z.strictObject({
-      path: z
-        .string()
-        .describe(
-          "Selected artifact path; empty when explicitly excluded from Evidence.",
-        ),
-      sha256: z
-        .string()
-        .regex(/^[0-9a-f]{64}$/)
-        .nullable()
-        .describe(
-          "Observed artifact SHA-256; null only when explicitly excluded by a sensitive declaration.",
-        ),
-      bytes: z.number().int().nonnegative(),
+    seen.add(record.ordinal);
+  }
+};
+/** Strict alternatives prevent undefined-valued facets from entering JSON Evidence. */
+export const webNetworkCapturePayloadSchema = z
+  .union([
+    z.strictObject({ ...payloadShape, qlog: qlogCaptureFactsSchema }),
+    z.strictObject(payloadShape),
+  ])
+  .superRefine(refineCoverage);
+/** Caller-selected file identity; explicit exclusions remain unknown. */
+export const webNetworkCaptureArtifactSchema = z.strictObject({
+  path: z
+    .string()
+    .describe(
+      "Selected artifact path; empty when explicitly excluded from Evidence.",
+    ),
+  sha256: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .nullable()
+    .describe("Observed SHA-256; null only when explicitly excluded."),
+  bytes: z.number().int().nonnegative(),
+});
+const artifactShape = {
+  artifact: webNetworkCaptureArtifactSchema,
+  runtime_attribution: z.literal("unknown"),
+  limitations: z.array(z.string()),
+};
+/** Qlog transport facts occur exactly on the qlog alternative. */
+export const webNetworkCaptureSchema = z
+  .discriminatedUnion("format", [
+    z.strictObject({
+      ...payloadShape,
+      ...artifactShape,
+      format: z.enum(["har", "mitmproxy", "saz"]),
     }),
-    format: z.enum(["har", "mitmproxy"]),
-    runtime_attribution: z.literal("unknown"),
-    limitations: z.array(z.string()),
-  });
+    z.strictObject({
+      ...payloadShape,
+      ...artifactShape,
+      format: z.literal("qlog"),
+      qlog: qlogCaptureFactsSchema,
+    }),
+  ])
+  .superRefine(refineCoverage);
 
 export type InspectWebNetworkCaptureInput = z.output<
   typeof inspectWebNetworkCaptureInputSchema
@@ -168,3 +247,25 @@ export type WebNetworkCapture = z.output<typeof webNetworkCaptureSchema>;
 export type WebNetworkCaptureRecord = z.output<
   typeof webNetworkCaptureRecordSchema
 >;
+
+const validatedImmutableCaptures = new WeakSet<object>();
+
+/** Reuse successful validation of the exact owned snapshot, without a retained copy. */
+export const safeParseOwnedWebNetworkCapture = (
+  input: unknown,
+): z.ZodSafeParseResult<WebNetworkCapture> => {
+  if (
+    typeof input === "object" &&
+    input !== null &&
+    validatedImmutableCaptures.has(input)
+  )
+    return { success: true, data: input as WebNetworkCapture };
+  const parsed = webNetworkCaptureSchema.safeParse(input);
+  if (parsed.success && canBorrowParsedJsonSnapshot(input, parsed.data)) {
+    // Borrow only when full validation preserves values, schema normalization
+    // and alias topology. Merely frozen or mutable objects never gain a proof.
+    validatedImmutableCaptures.add(input);
+    return { success: true, data: input };
+  }
+  return parsed;
+};

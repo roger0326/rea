@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { evidenceSchema } from "./evidence.js";
+import { overallStatus } from "./functionComparisonResults.js";
+import { evidenceInputSchema } from "./evidenceReference.js";
 import { digestSchema } from "./../domain/digests.js";
 import { prefixedDigestSchema } from "./../domain/digests.js";
 
@@ -18,8 +19,8 @@ const evidenceIdSchema = prefixedDigestSchema("ev");
 
 /** Inputs for explicit function-to-function comparison. */
 export const functionComparisonInputSchema = z.strictObject({
-  left: evidenceSchema,
-  right: evidenceSchema,
+  left: evidenceInputSchema,
+  right: evidenceInputSchema,
 });
 
 const textDeltaSchema = z.object({
@@ -79,20 +80,33 @@ const functionMatchSchema = z.union([
 ]);
 
 /** Deterministic dimension-classified function comparison Evidence payload. */
-export const functionComparisonResultSchema = z.object({
-  status: comparisonStatusSchema,
-  function_match: functionMatchSchema,
-  left_subject_sha256: digestSchema,
-  right_subject_sha256: digestSchema,
-  summary: z.object({
-    unchanged: z.number().int().min(0),
-    changed: z.number().int().min(0),
-    unknown: z.number().int().min(0),
-  }),
-  dimensions: z.array(functionDimensionSchema).length(8),
-  changes: z.array(functionDimensionSchema),
-  limitations: z.array(z.string()),
-});
+export const functionComparisonResultSchema = z
+  .object({
+    status: comparisonStatusSchema,
+    function_match: functionMatchSchema,
+    left_subject_sha256: digestSchema,
+    right_subject_sha256: digestSchema,
+    summary: z.object({
+      unchanged: z.number().int().min(0),
+      changed: z.number().int().min(0),
+      unknown: z.number().int().min(0),
+    }),
+    dimensions: z.array(functionDimensionSchema).length(8),
+    changes: z.array(functionDimensionSchema),
+    limitations: z.array(z.string()),
+  })
+  .superRefine((result, context) => {
+    if (
+      result.status !==
+      overallStatus(result.dimensions, result.function_match.status)
+    )
+      context.addIssue({
+        code: "custom",
+        path: ["status"],
+        message:
+          "Function comparison status contradicts its dimensions or function match.",
+      });
+  });
 
 export type FunctionComparisonResult = z.infer<
   typeof functionComparisonResultSchema

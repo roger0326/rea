@@ -6,15 +6,18 @@ import {
   AnalysisCancelledError,
   AnalysisInputError,
   AnalysisOutputError,
+  type AnalysisInputIssue,
 } from "../../domain/analysisErrorCore.js";
 import { createEvidence, type Evidence } from "../../domain/evidence.js";
 import {
   inspectWasmArtifactInputSchema,
   wasmArtifactSchema,
   wasmArtifactMatchesSubject,
+  DEFAULT_WASM_COMMAND_TIMEOUT_MS,
 } from "../../domain/wasm/wasmArtifact.js";
 import { analysisInputErrorFromIssues } from "../../domain/inputIssueProjection.js";
-import { err, ok, type Result } from "../../domain/result.js";
+import { err, type Result } from "../../domain/result.js";
+import { completeProviderEvidence } from "../ProviderOperationExecution.js";
 
 const OPERATION = "inspect_wasm_artifact";
 
@@ -41,31 +44,38 @@ export class WasmArtifactService {
           cause: input.error,
         }),
       );
-    if (
-      ![
-        input.data.path,
-        ...input.data.glue_paths,
-        ...input.data.candidate_paths,
-      ].every(isAbsolute)
-    )
-      return err(
-        new AnalysisInputError(OPERATION, undefined, [
-          {
-            path: ["path"],
-            reason: "invalid_format",
-            message: "Expected an absolute filesystem path on this host.",
-          },
-        ]),
-      );
+    const pathIssues = [
+      { value: input.data.path, path: ["path"] },
+      ...input.data.glue_paths.map((value, index) => ({
+        value,
+        path: ["glue_paths", index],
+      })),
+      ...input.data.candidate_paths.map((value, index) => ({
+        value,
+        path: ["candidate_paths", index],
+      })),
+    ].flatMap<AnalysisInputIssue>(({ value, path }) =>
+      isAbsolute(value)
+        ? []
+        : [
+            {
+              path,
+              reason: "invalid_format",
+              message: "Expected an absolute filesystem path on this host.",
+            },
+          ],
+    );
+    if (pathIssues.length > 0)
+      return err(new AnalysisInputError(OPERATION, undefined, pathIssues));
     const inspected = await this.provider.inspect(input.data, options);
     if (!inspected.ok) return inspected;
-    if (options?.signal?.aborted)
-      return err(new AnalysisCancelledError(OPERATION));
     const execution = inspected.value;
     const report = wasmArtifactSchema.safeParse(execution.result);
     if (
       !report.success ||
       report.data.artifact.path !== input.data.path ||
+      report.data.tool_profile.timeout_ms !==
+        (input.data.command_timeout_ms ?? DEFAULT_WASM_COMMAND_TIMEOUT_MS) ||
       !wasmArtifactMatchesSubject(report.data.artifact, execution.subject) ||
       JSON.stringify(report.data.glue.map((item) => item.artifact.path)) !==
         JSON.stringify(input.data.glue_paths) ||
@@ -80,7 +90,7 @@ export class WasmArtifactService {
           "WABT adapter returned malformed data or changed the selected artifact identity.",
         ),
       );
-    return ok(
+    return completeProviderEvidence(
       createEvidence(execution.subject, execution.provider, {
         operation: OPERATION,
         parameters: input.data,
@@ -92,6 +102,7 @@ export class WasmArtifactService {
         locations: execution.locations,
         limitations: execution.limitations,
       }),
+      options?.signal,
     );
   }
 }

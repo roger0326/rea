@@ -1,18 +1,25 @@
 import type { JavaScriptSourceRange } from "./javascriptStaticAnalysisTypes.js";
-import type { JavaScriptSemanticValue } from "./javascriptSemanticValueTypes.js";
+import type {
+  JavaScriptSemanticResourceLimit,
+  JavaScriptSemanticValue,
+} from "./javascriptSemanticValueTypes.js";
 import type {
   JavaScriptSemanticCoverage,
   JavaScriptSemanticReturnCoverage,
 } from "./javascriptSemanticCoverage.js";
+import type { JavaScriptModuleResolutionMode } from "./javascriptModuleResolutionMode.js";
 
 /** One exact module origin followed through imports, requires, or aliases. */
 export interface JavaScriptModuleOrigin {
-  readonly resolutionMode?: "import" | "require";
+  readonly resolutionMode?: JavaScriptModuleResolutionMode;
   readonly specifier: string;
   readonly importedPath: readonly string[];
 }
 
-/** Fail-closed provenance classification for one binding. */
+/**
+ * Fail-closed module-alias provenance for one binding, not transitive data flow.
+ * Locally constructed values may contain or derive from imported values.
+ */
 export type JavaScriptBindingProvenance =
   | {
       readonly status: "module";
@@ -102,6 +109,11 @@ export interface JavaScriptSemanticReturnSite {
   readonly returnSiteId: string;
   readonly location: JavaScriptSourceRange;
   readonly identityReferenceLocation: JavaScriptSourceRange | null;
+  /**
+   * Range of the unwrapped returned expression. Null when the return has no
+   * value. This is the value's syntax, which may be wider than an identifier.
+   */
+  readonly valueExpressionLocation: JavaScriptSourceRange | null;
   readonly value: JavaScriptSemanticValue;
 }
 
@@ -121,6 +133,8 @@ export interface JavaScriptSemanticCallSite {
 export interface JavaScriptSemanticCallArgument {
   readonly index: number;
   readonly location: JavaScriptSourceRange;
+  /** Unwrapped value expression; null for a spread or non-expression slot. */
+  readonly valueExpressionLocation: JavaScriptSourceRange | null;
   readonly spread: boolean;
 }
 
@@ -298,6 +312,7 @@ export interface JavaScriptSemanticConfigurationOperation {
   readonly key: string | null;
   readonly sourceConfigId: string | null;
   readonly value: string | number | boolean | null;
+  readonly valueResourceLimit?: JavaScriptSemanticResourceLimit;
   readonly resolution: "complete" | "partial";
 }
 
@@ -393,7 +408,7 @@ export interface JavaScriptSemanticFrontier {
 
 /** Static import/export relationship retained for cross-file composition. */
 export interface JavaScriptSemanticModuleLink {
-  readonly resolutionMode?: "import" | "require";
+  readonly resolutionMode?: JavaScriptModuleResolutionMode;
   readonly kind:
     | "import"
     | "type-import"

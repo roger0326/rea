@@ -1,8 +1,14 @@
+import {
+  bindArtifactFileCleanup,
+  ArtifactFileCleanupFailure,
+  artifactFileCancellationCause,
+} from "../artifacts/ArtifactFileOperation.js";
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
+import { fixedAllowanceOptions } from "../domain/fixedAllowanceRemediation.js";
 import type { AnalysisCapturedOutput } from "../domain/analysisErrorBase.js";
 import {
   AnalysisCancelledError,
@@ -19,6 +25,10 @@ import { readStableArtifact } from "../artifacts/readStableArtifact.js";
 import { ArtifactReaderFailure } from "../artifacts/ArtifactReader.js";
 import type { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.js";
 import { runOwnedCommand } from "../process/OwnedCommand.js";
+import type {
+  ProviderProcessSupervisor,
+  ProviderProcessStopResult,
+} from "../process/ProviderProcess.js";
 import { capturedSqliteOutput } from "./SqliteDatabaseFailures.js";
 import { SQLITE_DATABASE_LIMITS } from "./SqliteDatabaseLimits.js";
 
@@ -36,6 +46,7 @@ const replySchema = z.discriminatedUnion("ok", [
     reason: z.enum([
       "format",
       "selection",
+      "column-selection",
       "unsupported",
       "unavailable",
       "output-limit",
@@ -49,8 +60,17 @@ export type SqliteWorkerLauncher = NonNullable<
   Parameters<typeof runOwnedCommand>[2]
 >["launcher"];
 
+// Each input rejection names the caller argument that requires correction.
+const rejectedArgument = {
+  format: "path",
+  unsupported: "path",
+  selection: "table",
+  "column-selection": "columns",
+} as const;
+
 const rejectedReply = (
   reply: z.output<typeof replySchema> & { ok: false },
+  selectedPath: string,
   capturedOutput: AnalysisCapturedOutput,
 ) => {
   if (reply.reason === "unavailable")
@@ -79,13 +99,21 @@ const rejectedReply = (
         sqlite_value_or_record_bytes: SQLITE_DATABASE_LIMITS.outputBytes,
         worker_reply_bytes: SQLITE_DATABASE_LIMITS.outputBytes,
       },
-      { capturedOutput },
+      {
+        capturedOutput,
+        ...fixedAllowanceOptions("The SQLite worker reply allowance", "report"),
+      },
     );
+  const argument = rejectedArgument[reply.reason];
   return new AnalysisInputError(operation, { capturedOutput }, [
     {
-      path: [reply.reason === "selection" ? "table" : "path"],
+      path: [argument],
       reason: "invalid_format",
-      message: reply.message,
+      // The worker sees only the private snapshot, so name the caller's selection here.
+      message:
+        argument === "path"
+          ? `Selected SQLite database is invalid (${reply.message}): ${selectedPath}`
+          : reply.message,
     },
   ]);
 };
@@ -100,6 +128,10 @@ export const executeSqliteDatabaseWorker = async (request: {
   readonly launcher?: SqliteWorkerLauncher;
   readonly signal?: AbortSignal;
   readonly captured: (output: AnalysisCapturedOutput) => void;
+  readonly retainCleanup?: (
+    owner: ProviderProcessSupervisor,
+    result: Extract<ProviderProcessStopResult, { status: "incomplete" }>,
+  ) => void;
 }): Promise<z.output<typeof inspectionSchema>> => {
   const requestPath = join(request.root, "request.json");
   const replyPath = join(request.root, "reply.json");
@@ -134,6 +166,9 @@ export const executeSqliteDatabaseWorker = async (request: {
     {
       ...(request.signal === undefined ? {} : { signal: request.signal }),
       ...(request.launcher === undefined ? {} : { launcher: request.launcher }),
+      ...(request.retainCleanup === undefined
+        ? {}
+        : { retainCleanup: request.retainCleanup }),
     },
   );
   const capturedOutput = capturedSqliteOutput(execution);
@@ -156,14 +191,31 @@ export const executeSqliteDatabaseWorker = async (request: {
         ? { cleanup: cause.cleanup }
         : {}),
     };
-    if (request.signal?.aborted)
-      throw new AnalysisCancelledError(operation, options);
-    throw new AnalysisOutputError(
+    if (
+      cause instanceof ArtifactReaderFailure &&
+      (cause.reason === "cancelled" ||
+        (cause instanceof ArtifactFileCleanupFailure &&
+          cause.fileCleanupFailure.outcome.kind === "completed" &&
+          request.signal?.aborted))
+    ) {
+      const error = new AnalysisCancelledError(operation, {
+        ...options,
+        cause:
+          cause.reason === "cancelled"
+            ? artifactFileCancellationCause(cause)
+            : request.signal?.reason,
+      });
+      bindArtifactFileCleanup(cause, error);
+      throw error;
+    }
+    const error = new AnalysisOutputError(
       operation,
       `Owned SQLite worker reply is missing or malformed: ${cause instanceof Error ? cause.message : String(cause)}`,
       options,
     );
+    bindArtifactFileCleanup(cause, error);
+    throw error;
   }
-  if (!reply.ok) throw rejectedReply(reply, capturedOutput);
+  if (!reply.ok) throw rejectedReply(reply, request.input.path, capturedOutput);
   return reply.inspection;
 };

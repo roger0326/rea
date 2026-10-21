@@ -1,11 +1,17 @@
 import { z } from "incur";
+import { WEB_NETWORK_CAPTURE_FORMATS } from "../domain/webNetworkCapture.js";
 import { createWebNetworkCaptureService } from "../composition/webNetworkCaptures.js";
 import { CLI_COMMANDS } from "../cliCommandNames.js";
 import { logCliCommand } from "../cliLogging.js";
-import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import type { Logger } from "pino";
 import type { CliInstance } from "./types.js";
+import { cliIntegerArgument } from "./options.js";
 import { withCommandCancellation } from "./commandCancellation.js";
+import {
+  analysisEvidenceDeliveryOptions,
+  deliverCliAnalysisEvidence,
+} from "./analysisEvidenceDelivery.js";
+import { absoluteCallerPath } from "../filesystem/callerPath.js";
 
 /** Expose offline historical capture inspection with the same selection contract as MCP. */
 export const registerWebNetworkCaptureCommands = (
@@ -16,14 +22,33 @@ export const registerWebNetworkCaptureCommands = (
   const service = createWebNetworkCaptureService(environment);
   cli.command(CLI_COMMANDS.inspectWebNetworkCapture, {
     description:
-      "Inspect retained HAR or native mitmproxy records without fetching recorded URLs",
+      "Inspect retained HAR, native mitmproxy, Fiddler SAZ or aioquic qlog records without fetching recorded URLs",
     args: z.object({
       capturePath: z.string().describe("Absolute local capture path"),
-      format: z.enum(["har", "mitmproxy"]).describe("Producer capture format"),
+      format: z
+        .enum(WEB_NETWORK_CAPTURE_FORMATS)
+        .describe("Producer capture format"),
     }),
     options: z.object({
+      ...analysisEvidenceDeliveryOptions,
+      protobufFraming: z
+        .enum(["auto", "raw", "grpc", "grpc-web", "grpc-web-text"])
+        .optional()
+        .describe("Override framing for selected retained binary bodies"),
+      protobufBodyPointer: z
+        .array(z.string())
+        .optional()
+        .describe("Exact body pointers; repeat to select several"),
+      protobufSchema: z
+        .string()
+        .optional()
+        .describe("Absolute local compiled FileDescriptorSet path"),
+      protobufMessage: z
+        .string()
+        .optional()
+        .describe("Fully qualified message type in the descriptor set"),
       record: z
-        .array(z.coerce.number().int().nonnegative())
+        .array(cliIntegerArgument(0))
         .optional()
         .describe("Zero-based producer ordinals; repeat to select several"),
       sensitiveValue: z
@@ -39,20 +64,55 @@ export const registerWebNetworkCaptureCommands = (
           logger,
           CLI_COMMANDS.inspectWebNetworkCapture,
           async () => {
-            const result = await service.inspect(
-              {
-                capture_path: args.capturePath,
-                format: args.format,
-                sensitive_values: options.sensitiveValue,
-                ...(options.record === undefined
-                  ? {}
-                  : { record_ordinals: options.record }),
-              },
-              { signal },
-            );
-            return result.ok
-              ? result.value
-              : projectAnalysisError(result.error);
+            return deliverCliAnalysisEvidence({
+              run: () =>
+                service.inspect(
+                  {
+                    capture_path: absoluteCallerPath(args.capturePath),
+                    format: args.format,
+                    sensitive_values: options.sensitiveValue,
+                    ...([
+                      options.protobufFraming,
+                      options.protobufBodyPointer,
+                      options.protobufSchema,
+                      options.protobufMessage,
+                    ].every((value) => value === undefined)
+                      ? {}
+                      : {
+                          protobuf: {
+                            framing: options.protobufFraming ?? "auto",
+                            ...(options.protobufBodyPointer === undefined
+                              ? {}
+                              : { body_pointers: options.protobufBodyPointer }),
+                            ...(options.protobufSchema === undefined &&
+                            options.protobufMessage === undefined
+                              ? {}
+                              : {
+                                  schema: {
+                                    descriptor_set_path:
+                                      options.protobufSchema === undefined
+                                        ? undefined
+                                        : absoluteCallerPath(
+                                            options.protobufSchema,
+                                          ),
+                                    message_type: options.protobufMessage,
+                                  },
+                                }),
+                          },
+                        }),
+                    ...(options.record === undefined
+                      ? {}
+                      : { record_ordinals: options.record }),
+                  },
+                  { signal },
+                ),
+              service,
+              providerId: "web-network-capture",
+              operation: "inspect_web_network_capture",
+              signal,
+              detail: options.detail,
+              evidenceOutput: options.evidence_output,
+            });
           },
         ),
       ),

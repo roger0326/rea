@@ -36,6 +36,22 @@ const archiveWithOverlappingObjectRanges = (objectCount: number): Buffer => {
 };
 
 describe("NIBArchive decoder", () => {
+  it("keeps leading U+FEFF in length-prefixed keys and class names", () => {
+    const archive = encodeArchive({
+      classes: ["\uFEFFWidget"],
+      objects: [{ classIndex: 0, values: { count: 1, "\uFEFFcount": 2 } }],
+    });
+    expect(decodeNibArchive(archive).objects).toEqual([
+      {
+        id: 0,
+        class_name: "\uFEFFWidget",
+        values: { count: 1, "\uFEFFcount": 2 },
+      },
+    ]);
+    const invalid = Buffer.from(archive);
+    invalid[invalid.indexOf(Buffer.from("\uFEFFcount"))] = 0xff;
+    expect(() => decodeNibArchive(invalid)).toThrow(/not valid UTF-8/u);
+  });
   it("decodes bounded object, key, class, and reference tables", () => {
     const archive = encodeArchive({
       classes: ["NSView\0", "NSString\0"],
@@ -59,6 +75,23 @@ describe("NIBArchive decoder", () => {
       },
     ]);
     expect(decoded.coder_version).toBe(10);
+  });
+
+  it("counts AppKit outlet, action, and binding connector objects", () => {
+    const archive = encodeArchive({
+      classes: [
+        "NSNibOutletConnector",
+        "NSNibControlConnector",
+        "NSNibBindingConnector",
+      ],
+      objects: [
+        { classIndex: 0, values: {} },
+        { classIndex: 1, values: {} },
+        { classIndex: 2, values: {} },
+      ],
+    });
+
+    expect(decodeNibArchive(archive).connection_object_count).toBe(3);
   });
 
   it("rejects malformed references and unsupported format versions", () => {
